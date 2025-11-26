@@ -6,6 +6,8 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 import os
 import pickle
+import glob
+import socket
 from datetime import datetime, timedelta
 
 # Try to import Google Analytics client
@@ -37,6 +39,36 @@ def format_number(num):
     except:
         return "0"
 
+def find_credentials_file():
+    """Find OAuth credentials file (credentials.json or client_secret_*.json)"""
+    # First check for credentials.json
+    if os.path.exists('credentials.json'):
+        return 'credentials.json'
+    
+    # Look for client_secret_*.json files
+    client_secret_files = glob.glob('client_secret_*.json')
+    if client_secret_files:
+        return client_secret_files[0]  # Use the first one found
+    
+    return None
+
+def is_port_available(port):
+    """Check if a port is available"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(('localhost', port))
+            return True
+        except OSError:
+            return False
+
+def find_available_port(start_port=8080, max_attempts=10):
+    """Find an available port starting from start_port"""
+    for i in range(max_attempts):
+        port = start_port + i
+        if is_port_available(port):
+            return port
+    return None
+
 @st.cache_data
 def load_ga_credentials():
     """Load or create Google Analytics API credentials"""
@@ -51,10 +83,23 @@ def load_ga_credentials():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            if os.path.exists('credentials.json'):
+            creds_file = find_credentials_file()
+            if creds_file:
                 flow = InstalledAppFlow.from_client_secrets_file(
-                    'credentials.json', GA_SCOPES)
-                creds = flow.run_local_server(port=0)
+                    creds_file, GA_SCOPES)
+                # Try port 8080 first (must match redirect URI in Google Cloud Console)
+                # If port 8080 is in use, find an available port
+                port = 8080
+                if not is_port_available(port):
+                    st.warning(f"Port {port} is already in use. Trying to find an available port...")
+                    available_port = find_available_port(8080)
+                    if available_port:
+                        port = available_port
+                        st.info(f"Using port {port} instead. Make sure to add `http://localhost:{port}/` to authorized redirect URIs in Google Cloud Console.")
+                    else:
+                        st.error("Could not find an available port. Please close other applications using ports 8080-8090.")
+                        return None
+                creds = flow.run_local_server(port=port, open_browser=True)
             else:
                 return None
         
@@ -142,9 +187,15 @@ with st.sidebar:
     **Setup Instructions:**
     1. Go to [Google Cloud Console](https://console.cloud.google.com/)
     2. Enable **Google Analytics Data API**
-    3. Create OAuth 2.0 credentials (Desktop app)
-    4. Download as `credentials.json`
-    5. Get your GA4 Property ID from Analytics admin panel
+    3. Create OAuth 2.0 credentials (Desktop app type)
+    4. **IMPORTANT**: Add redirect URI in Google Cloud Console:
+       - Go to Credentials → Your OAuth 2.0 Client ID
+       - Under "Authorized redirect URIs", add BOTH:
+         * `http://localhost:8080/` (with trailing slash)
+         * `http://localhost:8080` (without trailing slash)
+       - OR use: `http://localhost` (without port)
+    5. Download credentials file
+    6. Get your GA4 Property ID from Analytics admin panel
     """)
     
     # Get GA client
