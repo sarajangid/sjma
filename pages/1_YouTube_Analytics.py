@@ -248,6 +248,20 @@ def get_channel_videos(youtube, channel_id, max_results=50):
         st.error(f"Error fetching videos: {str(e)}")
         return []
 
+def test_analytics_access(youtube_analytics, channel_id):
+    """Test if we have access to YouTube Analytics for a channel"""
+    try:
+        # Try a simple query to test access
+        response = youtube_analytics.reports().query(
+            ids=f'channel=={channel_id}',
+            startDate='2024-01-01',
+            endDate='2024-01-02',
+            metrics='views'
+        ).execute()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
 def get_analytics_data(youtube_analytics, channel_id, start_date, end_date, metrics='views,estimatedMinutesWatched,subscribersGained,likes,comments', dimensions='day'):
     """Get analytics data from YouTube Analytics API"""
     try:
@@ -263,22 +277,46 @@ def get_analytics_data(youtube_analytics, channel_id, start_date, end_date, metr
         error_str = str(e)
         if '403' in error_str or 'Forbidden' in error_str:
             st.error("🚫 **403 Forbidden - Access Denied**")
+            
+            # Try to get more details about the error
+            error_details = []
+            if 'HttpError' in error_str:
+                error_details.append("HTTP 403 Forbidden error")
+            if 'insufficient' in error_str.lower() or 'permission' in error_str.lower():
+                error_details.append("Insufficient permissions")
+            
             st.warning("""
             **You don't have permission to access YouTube Analytics for this channel.**
             
             **Possible reasons:**
-            1. ⚠️ You're not the channel owner - YouTube Analytics API only works for channels you own
-            2. ⚠️ The authenticated account doesn't have access to this channel
-            3. ⚠️ YouTube Analytics API may not be enabled for your project
+            1. ⚠️ **Channel Ownership**: You must be the channel owner - YouTube Analytics API only works for channels you own
+            2. ⚠️ **Account Mismatch**: The authenticated account doesn't own this channel
+            3. ⚠️ **API Not Enabled**: YouTube Analytics API may not be enabled in Google Cloud Console
+            4. ⚠️ **OAuth Scopes**: The OAuth token might not have the correct scopes
+            5. ⚠️ **Test User Setup**: If using test users, they must own the channel
             
-            **Solutions:**
-            - Make sure you're authenticated with the channel owner's account
-            - Try authenticating with the account that owns the channel
-            - Verify YouTube Analytics API is enabled in Google Cloud Console
-            - For public channels you don't own, you can only see basic public data (views, likes, comments)
+            **Debugging Steps:**
+            1. Check which account you're authenticated as (shown above)
+            2. Verify that account owns the channel you're trying to access
+            3. Go to [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Enabled APIs
+            4. Make sure **YouTube Analytics API** is enabled (not just YouTube Data API)
+            5. Try logging out and re-authenticating
+            6. Verify the OAuth consent screen has the correct scopes:
+               - `https://www.googleapis.com/auth/yt-analytics.readonly`
+            
+            **For Test Users:**
+            - Test users must be added in OAuth consent screen
+            - Test users must OWN the channel (not just have access)
+            - The email used for OAuth must match the channel owner's email
             """)
+            
+            # Show the actual error for debugging
+            with st.expander("🔍 **Technical Error Details**", expanded=False):
+                st.code(error_str)
         else:
             st.warning(f"Analytics API error: {error_str}")
+            with st.expander("🔍 **Technical Error Details**", expanded=False):
+                st.code(error_str)
         return None
 
 def get_video_analytics(youtube_analytics, channel_id, video_id, start_date, end_date):
@@ -362,8 +400,22 @@ with st.sidebar:
                 st.success("✅ Authenticated via OAuth")
                 if authenticated_user:
                     st.info(f"**Authenticated as:** {authenticated_user['channel_title']}")
-                    st.caption(f"Channel ID: {authenticated_user['channel_id']}")
-                st.success("✅ YouTube Analytics API available")
+                    st.caption(f"Channel ID: `{authenticated_user['channel_id']}`")
+                st.success("✅ YouTube Analytics API client created")
+                
+                # Check OAuth scopes
+                try:
+                    creds = load_youtube_credentials()
+                    if creds and hasattr(creds, 'scopes'):
+                        scopes = creds.scopes
+                        has_analytics_scope = any('yt-analytics' in scope for scope in scopes)
+                        if has_analytics_scope:
+                            st.success("✅ Analytics scope present in OAuth token")
+                        else:
+                            st.warning("⚠️ Analytics scope missing - you may need to re-authenticate")
+                            st.info("Required scope: `https://www.googleapis.com/auth/yt-analytics.readonly`")
+                except:
+                    pass
             else:
                 st.success("✅ Authenticated (Data API only)")
                 if authenticated_user:
@@ -379,7 +431,29 @@ with st.sidebar:
             4. **IMPORTANT**: Add redirect URI in Google Cloud Console:
                - Go to Credentials → Your OAuth 2.0 Client ID
                - Under "Authorized redirect URIs", add: `http://localhost:8080/`
-            5. Download credentials file
+            5. **Add Test Users** (if app is in Testing mode):
+               - Go to OAuth consent screen
+               - Scroll to "Test users" section
+               - Click "+ ADD USERS"
+               - Add email addresses of users who need access
+            6. Download credentials file
+            """)
+            st.expander("🔐 **2FA / Authentication Issues?**", expanded=False).markdown("""
+            **If you're having 2FA issues:**
+            - 2FA should work with OAuth - complete the 2FA challenge when prompted
+            - Make sure you're using the correct Google account
+            - If the app is in "Testing" mode, you MUST add test users in OAuth consent screen
+            - Test users must use the exact email address that has access to the YouTube channel
+            
+            **To add test users:**
+            1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+            2. Navigate to **APIs & Services** → **OAuth consent screen**
+            3. Scroll down to **Test users** section
+            4. Click **+ ADD USERS**
+            5. Add the email addresses of people who need to use the app
+            6. They must use the same email to authenticate
+            
+            **Note:** If the app is published, test users aren't needed, but the app must go through verification.
             """)
             st.stop()
     
@@ -472,16 +546,35 @@ try:
             can_access_analytics = False
             if authenticated_user and authenticated_user['channel_id'] == channel_id:
                 can_access_analytics = True
-                st.success(f"✅ You own this channel - Analytics access available")
+                st.success(f"✅ You own this channel - Analytics access should be available")
+                
+                # Test access before trying to fetch data
+                with st.spinner("Testing Analytics API access..."):
+                    has_access, error = test_analytics_access(youtube_analytics, channel_id)
+                    if not has_access:
+                        st.error("❌ **Access Test Failed**")
+                        st.warning(f"Could not access Analytics API: {error}")
+                        st.info("""
+                        **Even though you own the channel, access is denied. Check:**
+                        1. YouTube Analytics API is enabled in Google Cloud Console
+                        2. The OAuth token has the correct scopes
+                        3. Try logging out and re-authenticating
+                        """)
             else:
                 st.warning(f"⚠️ **Channel Ownership Check**")
                 if authenticated_user:
-                    st.info(f"Authenticated channel: `{authenticated_user['channel_id']}` | Requested channel: `{channel_id}`")
-                    st.warning("""
-                    **You may not have access to Analytics for this channel.**
-                    - YouTube Analytics API only works for channels you own
-                    - If this is not your channel, you'll only see public data
-                    """)
+                    st.info(f"**Authenticated channel:** `{authenticated_user['channel_id']}`")
+                    st.info(f"**Requested channel:** `{channel_id}`")
+                    if authenticated_user['channel_id'] != channel_id:
+                        st.error("""
+                        **❌ Channel Mismatch - Access Will Be Denied**
+                        
+                        You're authenticated as a different channel owner. YouTube Analytics API only works when:
+                        - The authenticated account OWNS the channel you're trying to access
+                        - The channel IDs must match exactly
+                        
+                        **Solution:** Authenticate with the account that owns channel `{channel_id}`
+                        """.format(channel_id=channel_id))
                 else:
                     st.warning("Could not verify channel ownership. Analytics may not be available.")
             

@@ -217,13 +217,36 @@ with st.sidebar:
     3. Create OAuth 2.0 credentials (Desktop app type)
     4. **IMPORTANT**: Add redirect URI in Google Cloud Console:
        - Go to Credentials → Your OAuth 2.0 Client ID
-       - Under "Authorized redirect URIs", add BOTH:
-         * `http://localhost:8080/` (with trailing slash)
-         * `http://localhost:8080` (without trailing slash)
-       - OR use: `http://localhost` (without port)
-    5. Download credentials file
-    6. Get your GA4 Property ID from Analytics admin panel
+       - Under "Authorized redirect URIs", add: `http://localhost:8080/`
+    5. **Add Test Users** (if app is in Testing mode):
+       - Go to OAuth consent screen
+       - Scroll to "Test users" section
+       - Click "+ ADD USERS"
+       - Add email addresses of users who need access
+    6. Download credentials file
+    7. Get your GA4 Property ID from Analytics admin panel
     """)
+    with st.expander("🔐 **2FA / Authentication Issues?**", expanded=False):
+        st.markdown("""
+        **If you're having 2FA issues:**
+        - 2FA should work with OAuth - complete the 2FA challenge when prompted
+        - Make sure you're using the correct Google account
+        - If the app is in "Testing" mode, you MUST add test users in OAuth consent screen
+        - Test users must use the exact email address that has access to the Google Analytics property
+        
+        **To add test users:**
+        1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+        2. Navigate to **APIs & Services** → **OAuth consent screen**
+        3. Scroll down to **Test users** section
+        4. Click **+ ADD USERS**
+        5. Add the email addresses of people who need to use the app
+        6. They must use the same email to authenticate
+        
+        **Important:** 
+        - Test users must have at least **Viewer** role in Google Analytics for the property
+        - The email used for OAuth must match the email that has access to the property
+        - If the app is published, test users aren't needed, but the app must go through verification.
+        """)
     
     # Logout button
     token_file = 'token_ga.pickle'
@@ -248,6 +271,12 @@ with st.sidebar:
     else:
         st.warning("⚠️ Please authenticate")
         st.info("Place your `client_secret_*.json` or `credentials.json` file in the project directory and refresh.")
+        st.info("""
+        **Having authentication issues?**
+        - Make sure you're added as a test user if the app is in Testing mode
+        - Use the exact email address that has access to the Google Analytics property
+        - Complete 2FA if prompted - it should work with OAuth
+        """)
         st.stop()
     
     st.divider()
