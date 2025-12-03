@@ -8,6 +8,8 @@ import os
 import pickle
 import glob
 import socket
+import time
+import subprocess
 from datetime import datetime, timedelta
 
 # Try to import Google Analytics client
@@ -52,6 +54,38 @@ def find_credentials_file():
     
     return None
 
+def clear_ga_credentials():
+    """Clear Google Analytics OAuth credentials"""
+    token_file = 'token_ga.pickle'
+    if os.path.exists(token_file):
+        try:
+            os.remove(token_file)
+            return True
+        except:
+            return False
+    return False
+
+def kill_port(port):
+    """Kill any process using the specified port"""
+    try:
+        # Find process using the port
+        result = subprocess.run(
+            ['lsof', '-ti', f':{port}'],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            pids = result.stdout.strip().split('\n')
+            for pid in pids:
+                try:
+                    subprocess.run(['kill', '-9', pid], check=False)
+                except:
+                    pass
+            return True
+    except:
+        pass
+    return False
+
 def is_port_available(port):
     """Check if a port is available"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -60,14 +94,6 @@ def is_port_available(port):
             return True
         except OSError:
             return False
-
-def find_available_port(start_port=8080, max_attempts=10):
-    """Find an available port starting from start_port"""
-    for i in range(max_attempts):
-        port = start_port + i
-        if is_port_available(port):
-            return port
-    return None
 
 @st.cache_data
 def load_ga_credentials():
@@ -87,18 +113,19 @@ def load_ga_credentials():
             if creds_file:
                 flow = InstalledAppFlow.from_client_secrets_file(
                     creds_file, GA_SCOPES)
-                # Try port 8080 first (must match redirect URI in Google Cloud Console)
-                # If port 8080 is in use, find an available port
+                # Always use port 8080 - kill any process using it first
                 port = 8080
                 if not is_port_available(port):
-                    st.warning(f"Port {port} is already in use. Trying to find an available port...")
-                    available_port = find_available_port(8080)
-                    if available_port:
-                        port = available_port
-                        st.info(f"Using port {port} instead. Make sure to add `http://localhost:{port}/` to authorized redirect URIs in Google Cloud Console.")
-                    else:
-                        st.error("Could not find an available port. Please close other applications using ports 8080-8090.")
-                        return None
+                    st.info("Port 8080 is in use. Freeing it up...")
+                    kill_port(port)
+                    # Wait a moment for the port to be released
+                    time.sleep(1)
+                
+                # Verify port is now available
+                if not is_port_available(port):
+                    st.error("Could not free up port 8080. Please manually close any applications using it.")
+                    return None
+                
                 creds = flow.run_local_server(port=port, open_browser=True)
             else:
                 return None
@@ -198,14 +225,29 @@ with st.sidebar:
     6. Get your GA4 Property ID from Analytics admin panel
     """)
     
+    # Logout button
+    token_file = 'token_ga.pickle'
+    if os.path.exists(token_file):
+        st.divider()
+        if st.button("🚪 Logout / Clear Credentials", use_container_width=True, type="secondary"):
+            if clear_ga_credentials():
+                st.success("✅ Credentials cleared! Please refresh the page.")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.error("Failed to clear credentials")
+        st.caption("Use this to sign in with a different account")
+        st.divider()
+    
     # Get GA client
     ga_client = get_ga_client()
     
     if ga_client:
         st.success("✅ Authenticated via OAuth")
+        st.info("**OAuth Status:** Connected to Google Analytics Data API")
     else:
         st.warning("⚠️ Please authenticate")
-        st.info("Place `credentials.json` in the project directory and refresh.")
+        st.info("Place your `client_secret_*.json` or `credentials.json` file in the project directory and refresh.")
         st.stop()
     
     st.divider()
@@ -214,21 +256,29 @@ with st.sidebar:
     property_id = st.text_input(
         "GA4 Property ID", 
         help="Find this in GA4 Admin → Property Settings (format: 123456789)",
-        value=st.session_state.get('ga_property_id', '')
+        value=st.session_state.get('ga_property_id', ''),
+        placeholder="Enter Property ID (e.g., 123456789)"
     )
     
     if property_id:
-        st.session_state['ga_property_id'] = property_id
-        st.success(f"✅ Using Property ID: {property_id}")
+        # Validate property ID format (should be numeric)
+        if property_id.isdigit():
+            st.session_state['ga_property_id'] = property_id
+            st.success(f"✅ Using Property ID: {property_id}")
+        else:
+            st.error("⚠️ Property ID must be numeric (e.g., 123456789)")
+            st.stop()
     else:
-        st.error("⚠️ Please enter a Property ID")
+        st.warning("⚠️ **Property ID Required**")
         st.info("""
         **How to find Property ID:**
         1. Go to [Google Analytics](https://analytics.google.com/)
-        2. Click Admin (gear icon)
-        3. Select your property
-        4. Go to Property Settings
-        5. Copy the Property ID (numeric, e.g., 123456789)
+        2. Click **Admin** (gear icon) in the bottom left
+        3. Select your **property** from the dropdown
+        4. Click **Property Settings**
+        5. Copy the **Property ID** (numeric, e.g., 123456789)
+        
+        **Note:** You need at least **Viewer** role in Google Analytics to access data.
         """)
         st.stop()
     
@@ -383,11 +433,19 @@ try:
             st.warning("No data available for the selected date range.")
     else:
         st.error("Could not fetch analytics data. Please check your Property ID and permissions.")
-        st.info("""
-        **Troubleshooting:**
-        1. Verify Property ID is correct
-        2. Ensure you have Viewer or higher permissions
-        3. Check that the property has data for the selected date range
+        st.warning("""
+        **403 Forbidden Error - Insufficient Permissions**
+        
+        **Possible reasons:**
+        1. ⚠️ You don't have Viewer (or higher) role for this property
+        2. ⚠️ The Property ID is incorrect
+        3. ⚠️ The authenticated account doesn't have access to this property
+        
+        **Solutions:**
+        - Click "🚪 Logout / Clear Credentials" above to sign in with a different account
+        - Make sure the account you sign in with has at least **Viewer** role in Google Analytics
+        - Verify the Property ID is correct in GA4 Admin → Property Settings
+        - Ask the property owner to grant you Viewer access
         """)
 
 except Exception as e:

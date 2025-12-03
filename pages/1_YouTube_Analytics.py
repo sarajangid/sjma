@@ -9,6 +9,8 @@ import os
 import pickle
 import glob
 import socket
+import time
+import subprocess
 from datetime import datetime, timedelta
 
 # YouTube API configuration
@@ -33,6 +35,27 @@ def find_credentials_file():
     
     return None
 
+def kill_port(port):
+    """Kill any process using the specified port"""
+    try:
+        # Find process using the port
+        result = subprocess.run(
+            ['lsof', '-ti', f':{port}'],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            pids = result.stdout.strip().split('\n')
+            for pid in pids:
+                try:
+                    subprocess.run(['kill', '-9', pid], check=False)
+                except:
+                    pass
+            return True
+    except:
+        pass
+    return False
+
 def is_port_available(port):
     """Check if a port is available"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -42,13 +65,16 @@ def is_port_available(port):
         except OSError:
             return False
 
-def find_available_port(start_port=8080, max_attempts=10):
-    """Find an available port starting from start_port"""
-    for i in range(max_attempts):
-        port = start_port + i
-        if is_port_available(port):
-            return port
-    return None
+def clear_youtube_credentials():
+    """Clear YouTube OAuth credentials"""
+    token_file = 'token_youtube.pickle'
+    if os.path.exists(token_file):
+        try:
+            os.remove(token_file)
+            return True
+        except:
+            return False
+    return False
 
 @st.cache_data
 def load_youtube_credentials():
@@ -68,18 +94,19 @@ def load_youtube_credentials():
             if creds_file:
                 flow = InstalledAppFlow.from_client_secrets_file(
                     creds_file, YOUTUBE_SCOPES)
-                # Try port 8080 first (must match redirect URI in Google Cloud Console)
-                # If port 8080 is in use, find an available port
+                # Always use port 8080 - kill any process using it first
                 port = 8080
                 if not is_port_available(port):
-                    st.warning(f"Port {port} is already in use. Trying to find an available port...")
-                    available_port = find_available_port(8080)
-                    if available_port:
-                        port = available_port
-                        st.info(f"Using port {port} instead. Make sure to add `http://localhost:{port}/` to authorized redirect URIs in Google Cloud Console.")
-                    else:
-                        st.error("Could not find an available port. Please close other applications using ports 8080-8090.")
-                        return None
+                    st.info("Port 8080 is in use. Freeing it up...")
+                    kill_port(port)
+                    # Wait a moment for the port to be released
+                    time.sleep(1)
+                
+                # Verify port is now available
+                if not is_port_available(port):
+                    st.error("Could not free up port 8080. Please manually close any applications using it.")
+                    return None
+                
                 creds = flow.run_local_server(port=port, open_browser=True)
             else:
                 return None
@@ -88,6 +115,21 @@ def load_youtube_credentials():
             pickle.dump(creds, token)
     
     return creds
+
+def get_authenticated_user_info(youtube_data):
+    """Get information about the authenticated user"""
+    try:
+        channels = youtube_data.channels().list(part='snippet', mine=True).execute()
+        if channels.get('items'):
+            channel = channels['items'][0]
+            return {
+                'channel_id': channel['id'],
+                'channel_title': channel['snippet']['title'],
+                'email': channel['snippet'].get('customUrl', 'N/A')
+            }
+    except:
+        pass
+    return None
 
 def get_youtube_services():
     """Build and return YouTube API services (Data and Analytics)"""
@@ -218,7 +260,25 @@ def get_analytics_data(youtube_analytics, channel_id, start_date, end_date, metr
         ).execute()
         return response
     except Exception as e:
-        st.warning(f"Analytics API error: {str(e)}")
+        error_str = str(e)
+        if '403' in error_str or 'Forbidden' in error_str:
+            st.error("🚫 **403 Forbidden - Access Denied**")
+            st.warning("""
+            **You don't have permission to access YouTube Analytics for this channel.**
+            
+            **Possible reasons:**
+            1. ⚠️ You're not the channel owner - YouTube Analytics API only works for channels you own
+            2. ⚠️ The authenticated account doesn't have access to this channel
+            3. ⚠️ YouTube Analytics API may not be enabled for your project
+            
+            **Solutions:**
+            - Make sure you're authenticated with the channel owner's account
+            - Try authenticating with the account that owns the channel
+            - Verify YouTube Analytics API is enabled in Google Cloud Console
+            - For public channels you don't own, you can only see basic public data (views, likes, comments)
+            """)
+        else:
+            st.warning(f"Analytics API error: {error_str}")
         return None
 
 def get_video_analytics(youtube_analytics, channel_id, video_id, start_date, end_date):
@@ -269,6 +329,22 @@ with st.sidebar:
                            help="For basic data only. Analytics requires OAuth.")
     
     use_oauth = False
+    authenticated_user = None
+    
+    # Logout button
+    token_file = 'token_youtube.pickle'
+    if os.path.exists(token_file):
+        st.divider()
+        if st.button("🚪 Logout / Clear Credentials", use_container_width=True, type="secondary"):
+            if clear_youtube_credentials():
+                st.success("✅ Credentials cleared! Please refresh the page.")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.error("Failed to clear credentials")
+        st.caption("Use this to sign in with a different account")
+        st.divider()
+    
     if api_key:
         youtube_data = build(YOUTUBE_DATA_API, API_VERSION, developerKey=api_key)
         youtube_analytics = None
@@ -279,10 +355,20 @@ with st.sidebar:
         youtube_data, youtube_analytics = get_youtube_services()
         if youtube_data:
             use_oauth = True
+            # Get authenticated user info
+            authenticated_user = get_authenticated_user_info(youtube_data)
+            
             if youtube_analytics:
-                st.success("✅ Authenticated via OAuth (Full access)")
+                st.success("✅ Authenticated via OAuth")
+                if authenticated_user:
+                    st.info(f"**Authenticated as:** {authenticated_user['channel_title']}")
+                    st.caption(f"Channel ID: {authenticated_user['channel_id']}")
+                st.success("✅ YouTube Analytics API available")
             else:
                 st.success("✅ Authenticated (Data API only)")
+                if authenticated_user:
+                    st.info(f"**Authenticated as:** {authenticated_user['channel_title']}")
+                st.warning("⚠️ YouTube Analytics API not available - check API enablement")
         else:
             st.warning("⚠️ Please authenticate")
             st.info("""
@@ -292,10 +378,7 @@ with st.sidebar:
             3. Create OAuth 2.0 credentials (Desktop app type)
             4. **IMPORTANT**: Add redirect URI in Google Cloud Console:
                - Go to Credentials → Your OAuth 2.0 Client ID
-               - Under "Authorized redirect URIs", add BOTH:
-                 * `http://localhost:8080/` (with trailing slash)
-                 * `http://localhost:8080` (without trailing slash)
-               - OR use: `http://localhost` (without port)
+               - Under "Authorized redirect URIs", add: `http://localhost:8080/`
             5. Download credentials file
             """)
             st.stop()
@@ -380,20 +463,37 @@ try:
         avg_views = int(stats.get('viewCount', 0)) / max(int(stats.get('videoCount', 1)), 1)
         st.metric("Avg Views/Video", format_number(int(avg_views)))
     
-    # Analytics API data
-    if youtube_analytics:
-        st.markdown("---")
-        st.subheader("📊 Advanced Analytics")
-        
-        with st.spinner("Fetching analytics data..."):
-            analytics_data = get_analytics_data(
-                youtube_analytics, 
-                channel_id,
-                start_date.strftime('%Y-%m-%d'),
-                end_date.strftime('%Y-%m-%d'),
-                metrics='views,estimatedMinutesWatched,subscribersGained,likes,comments,shares',
-                dimensions='day'
-            )
+        # Analytics API data
+        if youtube_analytics:
+            st.markdown("---")
+            st.subheader("📊 Advanced Analytics")
+            
+            # Check if authenticated user owns this channel
+            can_access_analytics = False
+            if authenticated_user and authenticated_user['channel_id'] == channel_id:
+                can_access_analytics = True
+                st.success(f"✅ You own this channel - Analytics access available")
+            else:
+                st.warning(f"⚠️ **Channel Ownership Check**")
+                if authenticated_user:
+                    st.info(f"Authenticated channel: `{authenticated_user['channel_id']}` | Requested channel: `{channel_id}`")
+                    st.warning("""
+                    **You may not have access to Analytics for this channel.**
+                    - YouTube Analytics API only works for channels you own
+                    - If this is not your channel, you'll only see public data
+                    """)
+                else:
+                    st.warning("Could not verify channel ownership. Analytics may not be available.")
+            
+            with st.spinner("Fetching analytics data..."):
+                analytics_data = get_analytics_data(
+                    youtube_analytics, 
+                    channel_id,
+                    start_date.strftime('%Y-%m-%d'),
+                    end_date.strftime('%Y-%m-%d'),
+                    metrics='views,estimatedMinutesWatched,subscribersGained,likes,comments,shares',
+                    dimensions='day'
+                )
         
         if analytics_data and 'rows' in analytics_data:
             column_names = [h['name'] for h in analytics_data['columnHeaders']]
