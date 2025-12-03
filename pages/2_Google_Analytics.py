@@ -285,7 +285,7 @@ with st.sidebar:
     property_id = st.text_input(
         "GA4 Property ID", 
         help="Find this in GA4 Admin → Property Settings (format: 123456789)",
-        value=st.session_state.get('ga_property_id', ''),
+        value=st.session_state.get('ga_property_id', '313983920'),
         placeholder="Enter Property ID (e.g., 123456789)"
     )
     
