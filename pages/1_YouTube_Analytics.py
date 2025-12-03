@@ -537,58 +537,60 @@ try:
         avg_views = int(stats.get('viewCount', 0)) / max(int(stats.get('videoCount', 1)), 1)
         st.metric("Avg Views/Video", format_number(int(avg_views)))
     
-        # Analytics API data
-        if youtube_analytics:
-            st.markdown("---")
-            st.subheader("📊 Advanced Analytics")
-            
-            # Check if authenticated user owns this channel
-            can_access_analytics = False
-            if authenticated_user and authenticated_user['channel_id'] == channel_id:
-                can_access_analytics = True
-                st.success(f"✅ You own this channel - Analytics access should be available")
-                
-                # Test access before trying to fetch data
-                with st.spinner("Testing Analytics API access..."):
-                    has_access, error = test_analytics_access(youtube_analytics, channel_id)
-                    if not has_access:
-                        st.error("❌ **Access Test Failed**")
-                        st.warning(f"Could not access Analytics API: {error}")
-                        st.info("""
-                        **Even though you own the channel, access is denied. Check:**
-                        1. YouTube Analytics API is enabled in Google Cloud Console
-                        2. The OAuth token has the correct scopes
-                        3. Try logging out and re-authenticating
-                        """)
-            else:
-                st.warning(f"⚠️ **Channel Ownership Check**")
-                if authenticated_user:
-                    st.info(f"**Authenticated channel:** `{authenticated_user['channel_id']}`")
-                    st.info(f"**Requested channel:** `{channel_id}`")
-                    if authenticated_user['channel_id'] != channel_id:
-                        st.error("""
-                        **❌ Channel Mismatch - Access Will Be Denied**
-                        
-                        You're authenticated as a different channel owner. YouTube Analytics API only works when:
-                        - The authenticated account OWNS the channel you're trying to access
-                        - The channel IDs must match exactly
-                        
-                        **Solution:** Authenticate with the account that owns channel `{channel_id}`
-                        """.format(channel_id=channel_id))
-                else:
-                    st.warning("Could not verify channel ownership. Analytics may not be available.")
-            
-            with st.spinner("Fetching analytics data..."):
-                analytics_data = get_analytics_data(
-                    youtube_analytics, 
-                    channel_id,
-                    start_date.strftime('%Y-%m-%d'),
-                    end_date.strftime('%Y-%m-%d'),
-                    metrics='views,estimatedMinutesWatched,subscribersGained,likes,comments,shares',
-                    dimensions='day'
-                )
+    # Analytics API data - Full width section
+    if youtube_analytics:
+        st.markdown("---")
+        # Use a container to ensure full width
+        st.markdown("## 📊 Advanced Analytics")
         
-        if analytics_data and 'rows' in analytics_data:
+        # Check if authenticated user owns this channel
+        can_access_analytics = False
+        if authenticated_user and authenticated_user['channel_id'] == channel_id:
+            can_access_analytics = True
+            st.success(f"✅ You own this channel - Analytics access should be available")
+            
+            # Test access before trying to fetch data
+            with st.spinner("Testing Analytics API access..."):
+                has_access, error = test_analytics_access(youtube_analytics, channel_id)
+                if not has_access:
+                    st.error("❌ **Access Test Failed**")
+                    st.warning(f"Could not access Analytics API: {error}")
+                    st.info("""
+                    **Even though you own the channel, access is denied. Check:**
+                    1. YouTube Analytics API is enabled in Google Cloud Console
+                    2. The OAuth token has the correct scopes
+                    3. Try logging out and re-authenticating
+                    """)
+        else:
+            st.warning(f"⚠️ **Channel Ownership Check**")
+            if authenticated_user:
+                st.info(f"**Authenticated channel:** `{authenticated_user['channel_id']}`")
+                st.info(f"**Requested channel:** `{channel_id}`")
+                if authenticated_user['channel_id'] != channel_id:
+                    st.error("""
+                    **❌ Channel Mismatch - Access Will Be Denied**
+                    
+                    You're authenticated as a different channel owner. YouTube Analytics API only works when:
+                    - The authenticated account OWNS the channel you're trying to access
+                    - The channel IDs must match exactly
+                    
+                    **Solution:** Authenticate with the account that owns channel `{channel_id}`
+                    """.format(channel_id=channel_id))
+            else:
+                st.warning("Could not verify channel ownership. Analytics may not be available.")
+        
+        analytics_data = None
+        with st.spinner("Fetching analytics data..."):
+            analytics_data = get_analytics_data(
+                youtube_analytics, 
+                channel_id,
+                start_date.strftime('%Y-%m-%d'),
+                end_date.strftime('%Y-%m-%d'),
+                metrics='views,estimatedMinutesWatched,subscribersGained,likes,comments,shares',
+                dimensions='day'
+            )
+        
+        if analytics_data and 'rows' in analytics_data and len(analytics_data['rows']) > 0:
             column_names = [h['name'] for h in analytics_data['columnHeaders']]
             df_analytics = pd.DataFrame(analytics_data['rows'], columns=column_names)
             
@@ -600,6 +602,8 @@ try:
                     column_mapping[col] = col.replace('_', ' ').title()
             df_analytics = df_analytics.rename(columns=column_mapping)
             
+            # Metrics row - full width
+            st.markdown("### Key Metrics")
             col1, col2, col3, col4, col5 = st.columns(5)
             if 'Views' in df_analytics.columns:
                 with col1:
@@ -622,19 +626,29 @@ try:
                 with col5:
                     st.metric("Comments", format_number(df_analytics['Comments'].sum()))
             
+            # Charts section - full width
+            st.markdown("### 📈 Analytics Charts")
+            st.markdown("")  # Add spacing
+            
+            # Use full width for charts
             col1, col2 = st.columns(2)
             with col1:
                 if 'Date' in df_analytics.columns and 'Views' in df_analytics.columns:
                     df_analytics['Date'] = pd.to_datetime(df_analytics['Date'])
                     fig = px.line(df_analytics, x='Date', y='Views', title='Daily Views', markers=True)
-                    fig.update_layout(height=400)
-                    st.plotly_chart(fig, use_container_width=True)
+                    fig.update_layout(height=400, showlegend=False, margin=dict(l=0, r=0, t=30, b=0))
+                    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True})
             with col2:
                 if 'Date' in df_analytics.columns and watch_col:
                     df_analytics['Date'] = pd.to_datetime(df_analytics['Date'])
-                    fig = px.line(df_analytics, x='Date', y=watch_col, title='Daily Watch Time', markers=True)
-                    fig.update_layout(height=400)
-                    st.plotly_chart(fig, use_container_width=True)
+                    fig = px.line(df_analytics, x='Date', y=watch_col, title='Daily Watch Time (Minutes)', markers=True)
+                    fig.update_layout(height=400, showlegend=False, margin=dict(l=0, r=0, t=30, b=0))
+                    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': True})
+        else:
+            if analytics_data is None:
+                st.info("No analytics data returned. This might indicate a permissions issue or no data for the selected date range.")
+            else:
+                st.info("No analytics data available for the selected date range. Try adjusting the date range in the sidebar.")
     
     # Videos
     st.markdown("---")
@@ -680,7 +694,7 @@ try:
             with st.container():
                 col1, col2 = st.columns([1, 3])
                 with col1:
-                    st.image(row['Thumbnail'], use_container_width=True)
+                    st.image(row['Thumbnail'], width=200)
                 with col2:
                     st.markdown(f"### [{row['Title']}](https://www.youtube.com/watch?v={row['Video ID']})")
                     st.caption(f"Published: {row['Published']}")
